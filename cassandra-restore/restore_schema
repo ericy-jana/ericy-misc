@@ -1,0 +1,26 @@
+#!/bin/bash -e
+
+bucket=''
+source_host=''
+keyspace=''
+target_host=''
+
+all_schema_file=/tmp/db_schema.cql
+tmp=/tmp
+
+extract=./extract.pl
+
+export MAX_HEAP_SIZE="8G"
+
+# cp schema
+aws s3 cp s3://${bucket}/${source_host}/cdb/data/db_schema.cql ${tmp}/
+
+[ -f ${tmp}/extracted_schema ] && rm ${tmp}/extracted_schema
+perl ${extract} ${all_schema_file} ${keyspace} > ${tmp}/extracted_schema
+
+sed -i '/replicate_on_write/d' ${tmp}/extracted_schema
+sed -i '/index_interval/d' ${tmp}/extracted_schema
+sed -i '/populate_io_cache_on_flush/d' ${tmp}/extracted_schema
+sed -i '/caching/d' ${tmp}/extracted_schema
+
+cqlsh -f ${tmp}/extracted_schema ${target_host}

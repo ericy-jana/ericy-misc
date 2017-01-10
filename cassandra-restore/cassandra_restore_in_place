@@ -1,0 +1,47 @@
+#!/bin/bash -e
+bucket=''
+host=''
+keyspace=''
+parallel_jobs=''
+destination=''
+
+filelist=/tmp/parallel_sync_down_snapshots.list
+
+[[ -f ${filelist} ]] && rm ${filelist}
+
+while getopts 'b:h:k:p:d:' flag; do
+  case "${flag}" in
+    b) bucket="${OPTARG}" ;;
+    h) host="${OPTARG}" ;;
+    k) keyspace="${OPTARG}" ;;
+    p) parallel_jobs="${OPTARG}" ;;
+    d) destination="${OPTARG}" ;;
+    *) error "Unexpected option ${flag}" ;;
+  esac
+done
+
+VARS="bucket host keyspace parallel_jobs destination"
+for var in $VARS ; do
+  if [[ -z "${!var}" ]] ; then
+    echo "$var is not set." 1>&2
+    exit 1
+  fi
+done
+
+sudo /etc/init.d/cassandra stop
+sudo apt-get install parallel
+sudo puppet agent --disable
+sudo pip install awscli --upgrade
+
+echo -n "building file list"
+
+for x in `aws s3 ls s3://${bucket}/${host}/cdb/data/${keyspace}/ | sed -e 's/^[ \t]*//' | cut -d " " -f 2` ; do
+  for y in `aws s3 ls s3://${bucket}/${host}/cdb/data/${keyspace}/${x}snapshots/ | tail -1 | sed -e 's/^[ \t]*//' | cut -d " " -f 2` ; do
+    echo "aws s3 sync s3://${bucket}/${host}/cdb/data/${keyspace}/${x}snapshots/${y} ${destination}/${keyspace}/${x}" >> ${filelist}
+    echo -n "."
+  done
+done
+
+echo done
+
+sudo -u cassandra parallel --gnu --jobs ${parallel_jobs} --progress --files < ${filelist}

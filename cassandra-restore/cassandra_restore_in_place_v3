@@ -1,0 +1,60 @@
+#!/bin/bash -e
+bucket=''
+source_host=''
+keyspace=''
+parallel_jobs='3'
+destination='/cdb/data'
+schema_target_host=''
+
+tmp=/tmp
+
+filelist=${tmp}/parallel_sync_down_snapshots.list
+
+[[ -f ${filelist} ]] && rm ${filelist}
+
+while getopts 'b:s:k:p:d:t:' flag; do
+  case "${flag}" in
+    b) bucket="${OPTARG}" ;;
+    s) source_host="${OPTARG}" ;;
+    k) keyspace="${OPTARG}" ;;
+    p) parallel_jobs="${OPTARG}" ;;
+    d) destination="${OPTARG}" ;;
+    t) schema_target_host="${OPTARG}" ;; 
+    *) error "Unexpected option ${flag}" ;;
+  esac
+done
+
+VARS="bucket source_host keyspace parallel_jobs destination schema_target_host"
+for var in $VARS ; do
+  if [[ -z "${!var}" ]] ; then
+    echo "$var is not set." 1>&2
+    exit 1
+  fi
+done
+
+sudo apt-get install parallel
+
+echo -n "building file list"
+
+for x in `aws s3 ls s3://${bucket}/${source_host}/cdb/data/${keyspace}/ | sed -e 's/^[ \t]*//' | cut -d " " -f 2` ; do
+  for y in `aws s3 ls s3://${bucket}/${source_host}/cdb/data/${keyspace}/${x}snapshots/ | tail -1 | sed -e 's/^[ \t]*//' | cut -d " " -f 2` ; do
+    echo "aws s3 sync s3://${bucket}/${source_host}/cdb/data/${keyspace}/${x}snapshots/${y} ${destination}/${keyspace}/${x}" >> ${filelist}
+    echo -n "."
+  done
+done
+
+echo done
+
+echo "Stopping Cassandra"
+/etc/init.d/cassandra stop
+
+echo "Copying Files..."
+sudo -u cassandra parallel --gnu --jobs ${parallel_jobs} --progress < ${filelist}
+
+echo "Starting Cassandra"
+/etc/init.d/cassandra start
+sleep 30
+
+echo "Applying schema files..."
+cqlsh -e "CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = {'class': 'NetworkTopologyStrategy', 'us-east': '3'}  AND durable_writes = true;" ${schema_target_host}
+find /cdb/data -mtime -7 -name schema.cql | xargs -I {} cqlsh -f {} ${schema_target_host}
